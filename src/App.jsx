@@ -122,6 +122,12 @@ const WORD_LIST = [
   "れきし","れんしゅう",
   "ろうか","ろけっと",
   "わかば","わすれもの",
+  // ---- 6〜7文字の難問（低確率で出題） ----
+  "きょうりゅう","とうもろこし","たんじょうび","うんどうかい","おこのみやき",
+  "けいさつかん","どうぶつえん","すいぞくかん","びじゅつかん","たいいくかん",
+  "おんがくかい","けしょうひん",
+  "おかいものかご","やきゅうじょう","おたんじょうび","しょうぼうしゃ",
+  "ゆうびんきょく","けんきゅうしゃ",
 ];
 
 // カタカナ→ひらがな正規化
@@ -161,8 +167,9 @@ async function checkWordExistsOnline(word) {
 // 出題に使ってはいけない頭文字
 const NG_CHARS = new Set(["ん", "を", "ゐ", "ゑ", "ー", "ゃ", "ゅ", "ょ", "っ"]);
 const MIN_LEN = 2;
-const MAX_LEN = 5;
-const MIN_WORD_COUNT = 2; // このセット数未満の（頭文字,文字数）は出題しない
+const MAX_LEN = 7;
+// 「実在する言葉が1つでもあれば出題OK」（＝存在しない問題は絶対に出さないための最低ライン）
+const MIN_WORD_COUNT = 1;
 
 // ---------- 2. インデックス構築 ----------
 function buildIndex() {
@@ -197,12 +204,33 @@ const VALID_COMBOS = Array.from(WORD_INDEX.entries())
   .filter(([, words]) => words.length >= MIN_WORD_COUNT)
   .map(([key]) => key);
 
+// 文字数が長い（＝該当語が少なく難しい）お題ほど選ばれやすくするための重み。
+// 2〜5文字は「文字数の2乗」で長い方を優遇し、6〜7文字はあえて低い固定値にして
+// 「たまに混ざる難問」くらいの低確率に抑える。
+// 存在保証は VALID_COMBOS（実在語1つ以上）で担保済みなので、ここでは「出やすさ」だけを調整する。
+function weightForCombo(key) {
+  const len = Number(key.split("-")[1]);
+  if (len >= 6) return 3; // 6・7文字は低確率で混ぜる
+  return len * len; // 2文字:4 / 3文字:9 / 4文字:16 / 5文字:25
+}
+
+function weightedPick(pool) {
+  const weights = pool.map(weightForCombo);
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return pool[i];
+  }
+  return pool[pool.length - 1];
+}
+
 function pickTopic(used) {
   const usedSet = new Set((used || []).slice(-8));
   let pool = VALID_COMBOS.filter((c) => !usedSet.has(c));
   if (pool.length === 0) pool = VALID_COMBOS;
   if (pool.length === 0) return { char: "か", len: 3, key: "か-3" }; // 最終フォールバック
-  const pick = pool[Math.floor(Math.random() * pool.length)];
+  const pick = weightedPick(pool);
   const [char, lenStr] = pick.split("-");
   return { char, len: Number(lenStr), key: pick };
 }
@@ -1134,21 +1162,30 @@ function OnlineGame({ onExit }) {
   // ---------- ホスト操作：ラウンド開始 ----------
   const hostStartRound = async (nextRoundNum, used) => {
     if (!dbApi || !isHost) return;
-    const { db, ref, update, serverTimestamp } = dbApi;
-    const t = pickTopic(used);
-    const nextRoundId = (room.roundId || 0) + 1;
-    await update(ref(db, `rooms/${roomCode}`), {
-      status: "playing",
-      currentRound: nextRoundNum,
-      topic: t,
-      roundId: nextRoundId,
-      roundStartAt: serverTimestamp(),
-      usedCombos: [...(room.usedCombos || []), t.key].slice(-8),
-    });
+    try {
+      const { db, ref, update, serverTimestamp } = dbApi;
+      const t = pickTopic(used);
+      const nextRoundId = (room.roundId || 0) + 1;
+      await update(ref(db, `rooms/${roomCode}`), {
+        status: "playing",
+        currentRound: nextRoundNum,
+        topic: t,
+        roundId: nextRoundId,
+        roundStartAt: serverTimestamp(),
+        usedCombos: [...(room.usedCombos || []), t.key].slice(-8),
+      });
+    } catch (e) {
+      console.error("hostStartRound failed:", e);
+      setErrorMsg(
+        `ラウンドを開始できませんでした（${e?.code || e?.message || "不明なエラー"}）。` +
+          "Firebase Realtime Databaseの「ルール」がread/write許可になっているか確認してください。"
+      );
+    }
   };
 
   const hostBeginGame = async () => {
     if (!dbApi || !isHost || !room) return;
+    setErrorMsg("");
     await hostStartRound(1, []);
   };
 
@@ -1156,21 +1193,29 @@ function OnlineGame({ onExit }) {
   const hostFinishRound = async () => {
     if (!dbApi || !isHost || !room || finalizingRef.current) return;
     finalizingRef.current = true;
-    const { db, ref, update } = dbApi;
-    const answers = room.answers?.[room.roundId] || {};
-    const correctOnes = Object.entries(answers)
-      .filter(([, a]) => a.correct)
-      .sort((a, b) => (a[1].serverTime || 0) - (b[1].serverTime || 0));
+    try {
+      const { db, ref, update } = dbApi;
+      const answers = room.answers?.[room.roundId] || {};
+      const correctOnes = Object.entries(answers)
+        .filter(([, a]) => a.correct)
+        .sort((a, b) => (a[1].serverTime || 0) - (b[1].serverTime || 0));
 
-    const scoreUpdates = {};
-    correctOnes.forEach(([pid], idx) => {
-      const cur = room.players?.[pid]?.score || 0;
-      scoreUpdates[`players/${pid}/score`] = cur + pointsFor(idx);
-    });
-    await update(ref(db, `rooms/${roomCode}`), {
-      status: "roundResult",
-      ...scoreUpdates,
-    });
+      const scoreUpdates = {};
+      correctOnes.forEach(([pid], idx) => {
+        const cur = room.players?.[pid]?.score || 0;
+        scoreUpdates[`players/${pid}/score`] = cur + pointsFor(idx);
+      });
+      await update(ref(db, `rooms/${roomCode}`), {
+        status: "roundResult",
+        ...scoreUpdates,
+      });
+    } catch (e) {
+      console.error("hostFinishRound failed:", e);
+      finalizingRef.current = false; // 失敗時は再試行できるようにする
+      setErrorMsg(
+        `採点に失敗しました（${e?.code || e?.message || "不明なエラー"}）。Firebaseのルールを確認してください。`
+      );
+    }
   };
 
   // ホストのみ：時間切れ or 全員回答済みでラウンド終了
@@ -1185,11 +1230,17 @@ function OnlineGame({ onExit }) {
 
   const hostNextOrEnd = async () => {
     if (!dbApi || !isHost || !room) return;
-    if (room.currentRound >= room.totalRounds) {
-      const { db, ref, update } = dbApi;
-      await update(ref(db, `rooms/${roomCode}`), { status: "gameOver" });
-    } else {
-      await hostStartRound(room.currentRound + 1, room.usedCombos || []);
+    setErrorMsg("");
+    try {
+      if (room.currentRound >= room.totalRounds) {
+        const { db, ref, update } = dbApi;
+        await update(ref(db, `rooms/${roomCode}`), { status: "gameOver" });
+      } else {
+        await hostStartRound(room.currentRound + 1, room.usedCombos || []);
+      }
+    } catch (e) {
+      console.error("hostNextOrEnd failed:", e);
+      setErrorMsg(`次のラウンドに進めませんでした（${e?.code || e?.message || "不明なエラー"}）。`);
     }
   };
 
@@ -1208,34 +1259,42 @@ function OnlineGame({ onExit }) {
       setTimeout(() => setToast(null), 1400);
       return;
     }
-    if (chars[0] !== room.topic.char) {
-      await set(ref(db, path), {
-        word: raw, correct: false,
-        reason: `「${room.topic.char}」から始まっていないよ`,
-        serverTime: serverTimestamp(),
-      });
-      return;
-    }
-    if (chars.length !== room.topic.len) {
-      await set(ref(db, path), {
-        word: raw, correct: false,
-        reason: `${room.topic.len}文字にしてね（今は${chars.length}文字）`,
-        serverTime: serverTimestamp(),
-      });
-      return;
-    }
+    try {
+      if (chars[0] !== room.topic.char) {
+        await set(ref(db, path), {
+          word: raw, correct: false,
+          reason: `「${room.topic.char}」から始まっていないよ`,
+          serverTime: serverTimestamp(),
+        });
+        return;
+      }
+      if (chars.length !== room.topic.len) {
+        await set(ref(db, path), {
+          word: raw, correct: false,
+          reason: `${room.topic.len}文字にしてね（今は${chars.length}文字）`,
+          serverTime: serverTimestamp(),
+        });
+        return;
+      }
 
-    setChecking(true);
-    const result = await checkWordExistsOnline(norm);
-    setChecking(false);
-    const correct = result.exists === true || WORD_SET.has(norm);
-    await set(ref(db, path), {
-      word: raw,
-      correct,
-      reason: correct ? "" : "オンライン辞書に見つからなかったよ",
-      checkedVia: result.source,
-      serverTime: serverTimestamp(),
-    });
+      setChecking(true);
+      const result = await checkWordExistsOnline(norm);
+      setChecking(false);
+      const correct = result.exists === true || WORD_SET.has(norm);
+      await set(ref(db, path), {
+        word: raw,
+        correct,
+        reason: correct ? "" : "オンライン辞書に見つからなかったよ",
+        checkedVia: result.source,
+        serverTime: serverTimestamp(),
+      });
+    } catch (e) {
+      setChecking(false);
+      console.error("submitMyAnswer failed:", e);
+      setErrorMsg(
+        `回答を送信できませんでした（${e?.code || e?.message || "不明なエラー"}）。Firebaseのルールを確認してください。`
+      );
+    }
   };
 
   const leaveRoom = async () => {
@@ -1291,6 +1350,10 @@ function OnlineGame({ onExit }) {
           </div>
         )}
 
+        {!loadError && errorMsg && (
+          <div style={styles.errorBanner}>⚠️ {errorMsg}</div>
+        )}
+
         {!loadError && sub === "home" && (
           <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
             <div style={styles.sectionLabel}>あなたの名前</div>
@@ -1316,7 +1379,6 @@ function OnlineGame({ onExit }) {
             >
               🔑 ルームコードで参加する
             </button>
-            {errorMsg && <p style={{ color: "#c9457a", fontWeight: 800, marginTop: 10 }}>{errorMsg}</p>}
           </div>
         )}
 
@@ -1349,7 +1411,6 @@ function OnlineGame({ onExit }) {
             <button className="pop-btn" onClick={() => setSub("home")} style={{ ...styles.addBtn, marginTop: 10 }}>
               戻る
             </button>
-            {errorMsg && <p style={{ color: "#c9457a", fontWeight: 800, marginTop: 10 }}>{errorMsg}</p>}
           </div>
         )}
 
@@ -1628,6 +1689,15 @@ const styles = {
     background: "#FFD23F",
     borderRadius: 16,
     padding: "10px 0",
+  },
+  errorBanner: {
+    background: "#FF5D8F",
+    color: "#fff",
+    fontWeight: 800,
+    fontSize: 13,
+    padding: "10px 14px",
+    borderRadius: 14,
+    marginBottom: 12,
   },
   sectionLabel: {
     fontFamily: "'Fredoka', sans-serif",
