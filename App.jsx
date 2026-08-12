@@ -185,24 +185,99 @@ function buildIndex() {
 const ROUND_SECONDS = 30;
 const RANK_POINTS = [100, 80, 60, 40]; // 5位以降は一律
 const LATE_POINT = 20;
+const pointsFor = (idx) => RANK_POINTS[idx] ?? LATE_POINT;
 
 function buildFontLink() {
   return "https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@700;800;900&display=swap";
 }
 
+// お題インデックスはモジュール読み込み時に一度だけ構築（LocalGame / OnlineGame 共通で使う）
+const WORD_INDEX = buildIndex();
+const VALID_COMBOS = Array.from(WORD_INDEX.entries())
+  .filter(([, words]) => words.length >= MIN_WORD_COUNT)
+  .map(([key]) => key);
+
+function pickTopic(used) {
+  const usedSet = new Set((used || []).slice(-8));
+  let pool = VALID_COMBOS.filter((c) => !usedSet.has(c));
+  if (pool.length === 0) pool = VALID_COMBOS;
+  if (pool.length === 0) return { char: "か", len: 3, key: "か-3" }; // 最終フォールバック
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  const [char, lenStr] = pick.split("-");
+  return { char, len: Number(lenStr), key: pick };
+}
+
+// ================= トップレベル：ゲームモード選択 =================
 export default function HayaoshiWordGame() {
-  const wordIndex = useMemo(() => buildIndex(), []);
-  const validCombos = useMemo(
-    () =>
-      Array.from(wordIndex.entries())
-        .filter(([, words]) => words.length >= MIN_WORD_COUNT)
-        .map(([key]) => key),
-    [wordIndex]
+  const [gameType, setGameType] = useState(null); // null | "local" | "online"
+  const [localInitialMode, setLocalInitialMode] = useState("multi");
+
+  if (gameType === "online") {
+    return <OnlineGame onExit={() => setGameType(null)} />;
+  }
+  if (gameType === "local") {
+    return (
+      <LocalGame
+        initialMode={localInitialMode}
+        onExit={() => setGameType(null)}
+      />
+    );
+  }
+  return (
+    <ModeSelectScreen
+      onSelectSolo={() => {
+        setLocalInitialMode("solo");
+        setGameType("local");
+      }}
+      onSelectLocalMulti={() => {
+        setLocalInitialMode("multi");
+        setGameType("local");
+      }}
+      onSelectOnline={() => setGameType("online")}
+    />
   );
+}
+
+function ModeSelectScreen({ onSelectSolo, onSelectLocalMulti, onSelectOnline }) {
+  return (
+    <div style={styles.app}>
+      <style>{`@import url('${buildFontLink()}'); * { box-sizing: border-box; } .pop-btn { transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; cursor: pointer; } .pop-btn:hover { transform: translateY(-2px); filter: brightness(1.05); } .pop-btn:active { transform: translateY(1px) scale(0.98); }`}</style>
+      <div style={{ ...styles.blob, top: -60, left: -40, background: "#FF5D8F" }} />
+      <div style={{ ...styles.blob, bottom: -70, right: -50, background: "#2EC4B6" }} />
+      <div style={styles.container}>
+        <header style={styles.header}>
+          <div style={styles.logoRow}>
+            <span style={styles.logoIcon}>⚡</span>
+            <h1 style={styles.title}>早押しワードゲーム</h1>
+          </div>
+        </header>
+        <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
+          <div style={styles.sectionLabel}>あそびかたを選んでね</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
+            <button className="pop-btn" onClick={onSelectSolo} style={styles.modeCard}>
+              🧍 ひとりで練習
+              <span style={styles.modeCardSub}>1台の端末でひとりで遊ぶ</span>
+            </button>
+            <button className="pop-btn" onClick={onSelectLocalMulti} style={styles.modeCard}>
+              👥 同じ端末でみんなで対戦
+              <span style={styles.modeCardSub}>1台を回し合って対戦</span>
+            </button>
+            <button className="pop-btn" onClick={onSelectOnline} style={{ ...styles.modeCard, background: "linear-gradient(135deg, #FF5D8F, #FFD23F)" }}>
+              🌐 友達とオンライン対戦
+              <span style={styles.modeCardSub}>それぞれの端末から部屋に参加</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LocalGame({ initialMode, onExit }) {
 
   // ------- ゲーム全体の状態 -------
   const [phase, setPhase] = useState("setup"); // setup | playing | roundResult | gameOver
-  const [mode, setMode] = useState("multi"); // multi | solo
+  const [mode, setMode] = useState(initialMode || "multi"); // multi | solo
   const [playerNames, setPlayerNames] = useState(["", ""]);
   const [players, setPlayers] = useState([]); // {id, name, score}
   const [totalRounds, setTotalRounds] = useState(7);
@@ -227,19 +302,6 @@ export default function HayaoshiWordGame() {
   const answeredIds = useMemo(
     () => new Set(roundAnswers.map((a) => a.playerId)),
     [roundAnswers]
-  );
-
-  const pickTopic = useCallback(
-    (used) => {
-      const usedSet = new Set(used.slice(-8));
-      let pool = validCombos.filter((c) => !usedSet.has(c));
-      if (pool.length === 0) pool = validCombos;
-      if (pool.length === 0) return { char: "か", len: 3 }; // 最終フォールバック
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      const [char, lenStr] = pick.split("-");
-      return { char, len: Number(lenStr), key: pick };
-    },
-    [validCombos]
   );
 
   const startRound = useCallback(
@@ -511,6 +573,11 @@ export default function HayaoshiWordGame() {
             <div style={styles.roundBadge}>
               ラウンド {currentRound} / {totalRounds}
             </div>
+          )}
+          {phase === "setup" && onExit && (
+            <button className="pop-btn" onClick={onExit} style={styles.backBtn}>
+              ← モード選択に戻る
+            </button>
           )}
         </header>
 
@@ -804,7 +871,7 @@ function PlayingScreen({
   );
 }
 
-function RoundResultScreen({ players, topic, rankedAnswers, pointsFor, isLastRound, onContinue }) {
+function RoundResultScreen({ players, topic, rankedAnswers, pointsFor, isLastRound, onContinue, hideButton }) {
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "?";
   return (
     <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
@@ -837,9 +904,13 @@ function RoundResultScreen({ players, topic, rankedAnswers, pointsFor, isLastRou
           </div>
         ))}
       </div>
-      <button className="pop-btn" onClick={onContinue} style={styles.startBtn}>
-        {isLastRound ? "最終結果を見る 🏁" : "次のラウンドへ ▶"}
-      </button>
+      {hideButton ? (
+        <p style={styles.helpText}>ホストが次のラウンドを準備しています…</p>
+      ) : (
+        <button className="pop-btn" onClick={onContinue} style={styles.startBtn}>
+          {isLastRound ? "最終結果を見る 🏁" : "次のラウンドへ ▶"}
+        </button>
+      )}
     </div>
   );
 }
@@ -867,6 +938,578 @@ function GameOverScreen({ sortedFinal, onReset }) {
       <button className="pop-btn" onClick={onReset} style={styles.startBtn}>
         もう一度あそぶ 🔄
       </button>
+    </div>
+  );
+}
+
+// ================= オンライン対戦（Firebase Realtime Database） =================
+//
+// データ構造: rooms/{roomCode}
+//   status: "lobby" | "playing" | "roundResult" | "gameOver"
+//   hostId, totalRounds, currentRound, topic, roundId, roundStartAt(サーバー時刻)
+//   usedCombos: [...], players: { [id]: {name, score} }, answers: { [roundId]: { [id]: {...} } }
+//
+// 判定の公平性のため、回答の並び順は「サーバーに書き込まれた時刻」を使う。
+// ラウンドの終了判定・得点計算は部屋の作成者（ホスト）の端末だけが行う。
+
+function makeRoomCode() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+function makePlayerId() {
+  return "p_" + Math.random().toString(36).slice(2, 10);
+}
+
+function OnlineGame({ onExit }) {
+  const [dbApi, setDbApi] = useState(null); // firebase/database の関数一式（動的import）
+  const [loadError, setLoadError] = useState(null);
+  const [sub, setSub] = useState("home"); // home | join | room
+  const [name, setName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const [roomCode, setRoomCode] = useState(null);
+  const [myId, setMyId] = useState(null);
+  const [room, setRoom] = useState(null); // 部屋のスナップショット
+  const [inputValue, setInputValue] = useState("");
+  const [toast, setToast] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(ROUND_SECONDS);
+  const [checking, setChecking] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+
+  const offsetRef = useRef(0); // サーバー時刻とのズレ(ms)
+  const roundIdSeenRef = useRef(0);
+  const roomRef = useRef(null);
+  const unsubRef = useRef(null);
+  const finalizingRef = useRef(false);
+
+  // firebase/database を動的import（未設定でもアプリ全体が壊れないように）
+  useEffect(() => {
+    let mounted = true;
+    import("firebase/database")
+      .then(async (mod) => {
+        const { db } = await import("./firebase.js");
+        if (!mounted) return;
+        setDbApi({ ...mod, db });
+        const offRef = mod.ref(db, ".info/serverTimeOffset");
+        mod.onValue(offRef, (snap) => {
+          offsetRef.current = snap.val() || 0;
+        });
+      })
+      .catch((e) => {
+        if (mounted) setLoadError(e?.message || "Firebaseの読み込みに失敗しました");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const serverNow = () => Date.now() + offsetRef.current;
+
+  // ---------- 部屋を作る ----------
+  const createRoom = async () => {
+    if (!dbApi || busy) return;
+    const trimmed = name.trim() || "ホスト";
+    setBusy(true);
+    setErrorMsg("");
+    try {
+      const { db, ref, set, get, serverTimestamp } = dbApi;
+      let code = makeRoomCode();
+      // 衝突チェック（簡易）
+      for (let i = 0; i < 5; i++) {
+        const snap = await get(ref(db, `rooms/${code}`));
+        if (!snap.exists()) break;
+        code = makeRoomCode();
+      }
+      const pid = makePlayerId();
+      await set(ref(db, `rooms/${code}`), {
+        status: "lobby",
+        hostId: pid,
+        totalRounds: 7,
+        currentRound: 0,
+        topic: null,
+        roundId: 0,
+        roundStartAt: null,
+        usedCombos: [],
+        players: { [pid]: { name: trimmed, score: 0 } },
+        answers: {},
+        createdAt: serverTimestamp(),
+      });
+      setRoomCode(code);
+      setMyId(pid);
+      setSub("room");
+    } catch (e) {
+      setErrorMsg("部屋の作成に失敗しました。Firebaseの設定を確認してください。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------- 部屋に参加する ----------
+  const joinRoom = async () => {
+    if (!dbApi || busy) return;
+    const code = joinCode.trim();
+    const trimmed = name.trim() || "プレイヤー";
+    if (!code) {
+      setErrorMsg("ルームコードを入力してね");
+      return;
+    }
+    setBusy(true);
+    setErrorMsg("");
+    try {
+      const { db, ref, get, set } = dbApi;
+      const snap = await get(ref(db, `rooms/${code}`));
+      if (!snap.exists()) {
+        setErrorMsg("そのルームコードは見つからなかったよ");
+        setBusy(false);
+        return;
+      }
+      const val = snap.val();
+      if (val.status !== "lobby") {
+        setErrorMsg("このルームはもう始まっているみたい");
+        setBusy(false);
+        return;
+      }
+      const pid = makePlayerId();
+      await set(ref(db, `rooms/${code}/players/${pid}`), { name: trimmed, score: 0 });
+      setRoomCode(code);
+      setMyId(pid);
+      setSub("room");
+    } catch (e) {
+      setErrorMsg("参加に失敗しました。通信環境を確認してください。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------- 部屋の状態を購読 ----------
+  useEffect(() => {
+    if (!dbApi || !roomCode) return;
+    const { db, ref, onValue } = dbApi;
+    const rRef = ref(db, `rooms/${roomCode}`);
+    roomRef.current = rRef;
+    const unsub = onValue(rRef, (snap) => {
+      setRoom(snap.val());
+    });
+    unsubRef.current = unsub;
+    return () => {
+      unsub && unsub();
+    };
+  }, [dbApi, roomCode]);
+
+  // ラウンドが切り替わったら演出・入力欄をリセット
+  useEffect(() => {
+    if (!room) return;
+    if (room.roundId && room.roundId !== roundIdSeenRef.current) {
+      roundIdSeenRef.current = room.roundId;
+      finalizingRef.current = false;
+      setInputValue("");
+      setRevealed(false);
+      setChecking(false);
+      setTimeout(() => setRevealed(true), 350);
+    }
+  }, [room]);
+
+  // タイマー表示の更新（サーバー時刻基準）
+  useEffect(() => {
+    if (!room || room.status !== "playing" || !room.roundStartAt) return;
+    const tick = () => {
+      const elapsedSec = Math.floor((serverNow() - room.roundStartAt) / 1000);
+      setTimeLeft(Math.max(0, ROUND_SECONDS - elapsedSec));
+    };
+    tick();
+    const t = setInterval(tick, 250);
+    return () => clearInterval(t);
+  }, [room?.status, room?.roundStartAt, room?.roundId]);
+
+  const isHost = room && myId && room.hostId === myId;
+  const playersArr = useMemo(
+    () => (room?.players ? Object.entries(room.players).map(([id, p]) => ({ id, ...p })) : []),
+    [room]
+  );
+  const myAnswers = room?.answers?.[room?.roundId] || {};
+  const answeredCount = Object.keys(myAnswers).length;
+  const hasAnswered = myId ? Boolean(myAnswers[myId]) : false;
+
+  // ---------- ホスト操作：ラウンド開始 ----------
+  const hostStartRound = async (nextRoundNum, used) => {
+    if (!dbApi || !isHost) return;
+    const { db, ref, update, serverTimestamp } = dbApi;
+    const t = pickTopic(used);
+    const nextRoundId = (room.roundId || 0) + 1;
+    await update(ref(db, `rooms/${roomCode}`), {
+      status: "playing",
+      currentRound: nextRoundNum,
+      topic: t,
+      roundId: nextRoundId,
+      roundStartAt: serverTimestamp(),
+      usedCombos: [...(room.usedCombos || []), t.key].slice(-8),
+    });
+  };
+
+  const hostBeginGame = async () => {
+    if (!dbApi || !isHost || !room) return;
+    await hostStartRound(1, []);
+  };
+
+  // ---------- ホスト操作：ラウンド終了→採点 ----------
+  const hostFinishRound = async () => {
+    if (!dbApi || !isHost || !room || finalizingRef.current) return;
+    finalizingRef.current = true;
+    const { db, ref, update } = dbApi;
+    const answers = room.answers?.[room.roundId] || {};
+    const correctOnes = Object.entries(answers)
+      .filter(([, a]) => a.correct)
+      .sort((a, b) => (a[1].serverTime || 0) - (b[1].serverTime || 0));
+
+    const scoreUpdates = {};
+    correctOnes.forEach(([pid], idx) => {
+      const cur = room.players?.[pid]?.score || 0;
+      scoreUpdates[`players/${pid}/score`] = cur + pointsFor(idx);
+    });
+    await update(ref(db, `rooms/${roomCode}`), {
+      status: "roundResult",
+      ...scoreUpdates,
+    });
+  };
+
+  // ホストのみ：時間切れ or 全員回答済みでラウンド終了
+  useEffect(() => {
+    if (!isHost || !room || room.status !== "playing") return;
+    const allAnswered = playersArr.length > 0 && answeredCount >= playersArr.length;
+    if (allAnswered || timeLeft <= 0) {
+      hostFinishRound();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, room?.status, answeredCount, timeLeft, playersArr.length]);
+
+  const hostNextOrEnd = async () => {
+    if (!dbApi || !isHost || !room) return;
+    if (room.currentRound >= room.totalRounds) {
+      const { db, ref, update } = dbApi;
+      await update(ref(db, `rooms/${roomCode}`), { status: "gameOver" });
+    } else {
+      await hostStartRound(room.currentRound + 1, room.usedCombos || []);
+    }
+  };
+
+  // ---------- 自分の回答送信 ----------
+  const submitMyAnswer = async () => {
+    if (!dbApi || !room?.topic || hasAnswered) return;
+    const raw = inputValue;
+    const norm = normalize(raw);
+    const chars = Array.from(norm);
+    const { db, ref, set, serverTimestamp } = dbApi;
+    const path = `rooms/${roomCode}/answers/${room.roundId}/${myId}`;
+    setInputValue("");
+
+    if (chars.length === 0) {
+      setToast({ text: "文字を入力してね", ok: false });
+      setTimeout(() => setToast(null), 1400);
+      return;
+    }
+    if (chars[0] !== room.topic.char) {
+      await set(ref(db, path), {
+        word: raw, correct: false,
+        reason: `「${room.topic.char}」から始まっていないよ`,
+        serverTime: serverTimestamp(),
+      });
+      return;
+    }
+    if (chars.length !== room.topic.len) {
+      await set(ref(db, path), {
+        word: raw, correct: false,
+        reason: `${room.topic.len}文字にしてね（今は${chars.length}文字）`,
+        serverTime: serverTimestamp(),
+      });
+      return;
+    }
+
+    setChecking(true);
+    const result = await checkWordExistsOnline(norm);
+    setChecking(false);
+    const correct = result.exists === true || WORD_SET.has(norm);
+    await set(ref(db, path), {
+      word: raw,
+      correct,
+      reason: correct ? "" : "オンライン辞書に見つからなかったよ",
+      checkedVia: result.source,
+      serverTime: serverTimestamp(),
+    });
+  };
+
+  const leaveRoom = async () => {
+    try {
+      if (dbApi && roomCode && myId) {
+        const { db, ref, remove } = dbApi;
+        await remove(ref(db, `rooms/${roomCode}/players/${myId}`));
+      }
+    } catch (e) {}
+    setRoomCode(null);
+    setRoom(null);
+    setMyId(null);
+    setSub("home");
+  };
+
+  const sortedFinal = useMemo(() => [...playersArr].sort((a, b) => b.score - a.score), [playersArr]);
+  const timerPct = timeLeft / ROUND_SECONDS;
+  const timerColor = timerPct > 0.5 ? "#2EC4B6" : timerPct > 0.2 ? "#FFD23F" : "#FF5D8F";
+
+  return (
+    <div style={styles.app}>
+      <style>{`
+        @import url('${buildFontLink()}');
+        * { box-sizing: border-box; }
+        .pop-btn { transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; cursor: pointer; }
+        .pop-btn:hover { transform: translateY(-2px); filter: brightness(1.05); }
+        .pop-btn:active { transform: translateY(1px) scale(0.98); }
+        @keyframes popIn { 0% { transform: scale(.7); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+        @keyframes flipIn { 0% { transform: rotateY(90deg) scale(.85); opacity: 0; } 60% { transform: rotateY(-8deg) scale(1.03); opacity: 1; } 100% { transform: rotateY(0deg) scale(1); opacity: 1; } }
+        @keyframes toastSlide { 0% { transform: translate(-50%, 20px); opacity: 0; } 15% { transform: translate(-50%, 0); opacity: 1; } 85% { transform: translate(-50%, 0); opacity: 1; } 100% { transform: translate(-50%, -10px); opacity: 0; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+      <div style={{ ...styles.blob, top: -60, left: -40, background: "#FF5D8F" }} />
+      <div style={{ ...styles.blob, bottom: -70, right: -50, background: "#2EC4B6" }} />
+      <div style={styles.container}>
+        <header style={styles.header}>
+          <div style={styles.logoRow}>
+            <span style={styles.logoIcon}>⚡</span>
+            <h1 style={styles.title}>オンライン対戦</h1>
+          </div>
+          {room?.status && room.status !== "lobby" && (
+            <div style={styles.roundBadge}>ラウンド {room.currentRound} / {room.totalRounds}</div>
+          )}
+          <button className="pop-btn" onClick={sub === "room" ? leaveRoom : onExit} style={styles.backBtn}>
+            ← {sub === "room" ? "退出する" : "モード選択に戻る"}
+          </button>
+        </header>
+
+        {loadError && (
+          <div style={{ ...styles.card, color: "#c9457a", fontWeight: 800 }}>
+            Firebaseの読み込みに失敗しました：{loadError}
+            <br />firebase パッケージのインストールと src/firebase.js の設定を確認してください。
+          </div>
+        )}
+
+        {!loadError && sub === "home" && (
+          <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
+            <div style={styles.sectionLabel}>あなたの名前</div>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="プレイヤー"
+              style={styles.input}
+              maxLength={10}
+            />
+            <button
+              className="pop-btn"
+              onClick={createRoom}
+              disabled={!dbApi || busy}
+              style={{ ...styles.startBtn, opacity: !dbApi || busy ? 0.6 : 1 }}
+            >
+              🎉 ルームを作る（ホストになる）
+            </button>
+            <button
+              className="pop-btn"
+              onClick={() => setSub("join")}
+              style={{ ...styles.roundOption, marginTop: 12, width: "100%" }}
+            >
+              🔑 ルームコードで参加する
+            </button>
+            {errorMsg && <p style={{ color: "#c9457a", fontWeight: 800, marginTop: 10 }}>{errorMsg}</p>}
+          </div>
+        )}
+
+        {!loadError && sub === "join" && (
+          <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
+            <div style={styles.sectionLabel}>あなたの名前</div>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="プレイヤー"
+              style={styles.input}
+              maxLength={10}
+            />
+            <div style={{ ...styles.sectionLabel, marginTop: 16 }}>ルームコード（4桁）</div>
+            <input
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="1234"
+              style={{ ...styles.input, letterSpacing: 4, fontSize: 22, textAlign: "center" }}
+              maxLength={4}
+            />
+            <button
+              className="pop-btn"
+              onClick={joinRoom}
+              disabled={!dbApi || busy}
+              style={{ ...styles.startBtn, opacity: !dbApi || busy ? 0.6 : 1 }}
+            >
+              参加する 🚪
+            </button>
+            <button className="pop-btn" onClick={() => setSub("home")} style={{ ...styles.addBtn, marginTop: 10 }}>
+              戻る
+            </button>
+            {errorMsg && <p style={{ color: "#c9457a", fontWeight: 800, marginTop: 10 }}>{errorMsg}</p>}
+          </div>
+        )}
+
+        {!loadError && sub === "room" && room && room.status === "lobby" && (
+          <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
+            <div style={styles.sectionLabel}>ルームコード（友達に伝えてね）</div>
+            <div style={styles.roomCodeBig}>{roomCode}</div>
+            <div style={{ ...styles.sectionLabel, marginTop: 18 }}>参加者（{playersArr.length}人）</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {playersArr.map((p) => (
+                <div key={p.id} style={styles.playerRow}>
+                  <span style={styles.playerRowName}>
+                    {p.name} {p.id === room.hostId ? "👑" : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {isHost ? (
+              <>
+                <div style={{ ...styles.sectionLabel, marginTop: 18 }}>ラウンド数</div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {[5, 7, 10].map((n) => (
+                    <button
+                      key={n}
+                      className="pop-btn"
+                      onClick={() =>
+                        dbApi &&
+                        dbApi.update(dbApi.ref(dbApi.db, `rooms/${roomCode}`), { totalRounds: n })
+                      }
+                      style={{
+                        ...styles.roundOption,
+                        ...(room.totalRounds === n ? styles.roundOptionActive : {}),
+                      }}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                <button className="pop-btn" onClick={hostBeginGame} style={styles.startBtn}>
+                  ゲーム開始！ 🚀
+                </button>
+              </>
+            ) : (
+              <p style={styles.helpText}>ホストがゲームを開始するのを待っています…</p>
+            )}
+          </div>
+        )}
+
+        {!loadError && sub === "room" && room && room.status === "playing" && room.topic && (
+          <div style={{ position: "relative" }}>
+            <div style={{ ...styles.topicCard, animation: revealed ? "flipIn .5s ease" : "none", opacity: revealed ? 1 : 0 }}>
+              <div style={styles.topicLabel}>おだい</div>
+              <div style={styles.topicRow}>
+                <div style={styles.topicChunk}>
+                  <div style={styles.topicChunkLabel}>頭文字</div>
+                  <div style={styles.topicChar}>{revealed ? room.topic.char : "？"}</div>
+                </div>
+                <div style={styles.topicChunk}>
+                  <div style={styles.topicChunkLabel}>文字数</div>
+                  <div style={styles.topicChar}>{revealed ? `${room.topic.len}文字` : "？"}</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.timerWrap}>
+              <svg width="100" height="100" viewBox="0 0 100 100">
+                <circle cx="50" cy="50" r="42" stroke="#3a2960" strokeWidth="10" fill="none" />
+                <circle
+                  cx="50" cy="50" r="42" stroke={timerColor} strokeWidth="10" fill="none"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 42}
+                  strokeDashoffset={2 * Math.PI * 42 * (1 - timeLeft / ROUND_SECONDS)}
+                  transform="rotate(-90 50 50)"
+                  style={{ transition: "stroke-dashoffset .25s linear, stroke .3s" }}
+                />
+                <text x="50" y="57" textAnchor="middle" fontSize="26" fontWeight="800" fill="#FFF8EC" fontFamily="Fredoka, sans-serif">
+                  {timeLeft}
+                </text>
+              </svg>
+            </div>
+
+            <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+              {playersArr.map((p) => {
+                const answered = Boolean(myAnswers[p.id]);
+                const isMe = p.id === myId;
+                return (
+                  <div key={p.id} style={styles.playerRow}>
+                    <div style={styles.playerRowLeft}>
+                      <span style={styles.playerRowScore}>{p.score}pt</span>
+                      <span style={styles.playerRowName}>{p.name}{isMe ? "（あなた）" : ""}</span>
+                    </div>
+                    {isMe ? (
+                      checking ? (
+                        <div style={styles.checkingBadge}>
+                          <span style={styles.spinner} />辞書に確認中…
+                        </div>
+                      ) : hasAnswered ? (
+                        <span style={{ ...styles.answerBtn, ...styles.answerBtnDone }}>回答ずみ ✓</span>
+                      ) : (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <input
+                            value={inputValue}
+                            onChange={(e) => setInputValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                                e.preventDefault();
+                                submitMyAnswer();
+                              }
+                            }}
+                            placeholder="ひらがなで入力"
+                            style={styles.answerInput}
+                          />
+                          <button type="button" className="pop-btn" onClick={submitMyAnswer} style={styles.submitBtn}>
+                            決定
+                          </button>
+                        </div>
+                      )
+                    ) : (
+                      <span style={{ ...styles.answerBtn, ...styles.answerBtnDone }}>
+                        {answered ? "回答ずみ ✓" : "考え中…"}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {toast && (
+              <div style={{ ...styles.toast, background: toast.ok ? "#2EC4B6" : "#FF5D8F", animation: "toastSlide 1.8s ease forwards" }}>
+                {toast.text}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!loadError && sub === "room" && room && room.status === "roundResult" && (
+          <RoundResultScreen
+            players={playersArr}
+            topic={room.topic}
+            rankedAnswers={(() => {
+              const answers = room.answers?.[room.roundId] || {};
+              const list = Object.entries(answers).map(([pid, a]) => ({ playerId: pid, ...a }));
+              const correctOnes = list.filter((a) => a.correct).sort((a, b) => (a.serverTime || 0) - (b.serverTime || 0));
+              const wrongOnes = list.filter((a) => !a.correct);
+              const noAnswer = playersArr
+                .filter((p) => !list.some((a) => a.playerId === p.id))
+                .map((p) => ({ playerId: p.id }));
+              return { correctOnes, wrongOnes, noAnswer };
+            })()}
+            pointsFor={pointsFor}
+            isLastRound={room.currentRound >= room.totalRounds}
+            onContinue={isHost ? hostNextOrEnd : () => {}}
+            hideButton={!isHost}
+          />
+        )}
+
+        {!loadError && sub === "room" && room && room.status === "gameOver" && (
+          <GameOverScreen sortedFinal={sortedFinal} onReset={leaveRoom} />
+        )}
+      </div>
     </div>
   );
 }
@@ -944,6 +1587,47 @@ const styles = {
     background: "#241443",
     color: "#FFD23F",
     border: "2px solid #241443",
+  },
+  modeCard: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 4,
+    padding: "16px 18px",
+    borderRadius: 16,
+    border: "none",
+    background: "#241443",
+    color: "#fff",
+    fontFamily: "'Fredoka', sans-serif",
+    fontWeight: 600,
+    fontSize: 17,
+    textAlign: "left",
+  },
+  modeCardSub: {
+    fontFamily: "'Nunito', sans-serif",
+    fontWeight: 700,
+    fontSize: 12,
+    opacity: 0.75,
+  },
+  backBtn: {
+    padding: "6px 12px",
+    borderRadius: 999,
+    border: "2px solid rgba(255,248,236,0.4)",
+    background: "transparent",
+    color: "#FFF8EC",
+    fontWeight: 800,
+    fontSize: 12,
+  },
+  roomCodeBig: {
+    fontFamily: "'Fredoka', sans-serif",
+    fontSize: 44,
+    fontWeight: 700,
+    letterSpacing: 8,
+    color: "#241443",
+    textAlign: "center",
+    background: "#FFD23F",
+    borderRadius: 16,
+    padding: "10px 0",
   },
   sectionLabel: {
     fontFamily: "'Fredoka', sans-serif",
