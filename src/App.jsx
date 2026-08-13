@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { startBgm, stopBgm, isBgmOn } from "./bgm.js";
 
 /* ============================================================
    早押しワードゲーム（プロトタイプ）
@@ -162,6 +163,19 @@ async function checkWordExistsOnline(word) {
   return { exists: null, source: "offline" };
 }
 
+// checkWordExistsOnline がAPIの不調・回線遅延などでいつまでも解決しないと、
+// 回答した本人の画面が「判定中…」のまま固まり、結果としてラウンドも終わらずフリーズする。
+// それを防ぐため、指定ミリ秒たっても終わらなければ強制的にタイムアウト扱いで先に進める。
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ exists: null, source: "timeout" }), ms)
+    ),
+  ]);
+}
+const WORD_CHECK_TIMEOUT_MS = 3000;
+
 
 
 // 出題に使ってはいけない頭文字
@@ -235,6 +249,25 @@ function pickTopic(used) {
   return { char, len: Number(lenStr), key: pick };
 }
 
+// ================= BGMトグルボタン（どの画面にも置ける共通部品） =================
+function BgmToggle() {
+  const [on, setOn] = useState(() => isBgmOn());
+  const toggle = () => {
+    if (on) {
+      stopBgm();
+      setOn(false);
+    } else {
+      startBgm();
+      setOn(true);
+    }
+  };
+  return (
+    <button className="pop-btn" onClick={toggle} style={styles.bgmBtn} aria-label="BGMのオン・オフ">
+      {on ? "🔊 BGM" : "🔇 BGM"}
+    </button>
+  );
+}
+
 // ================= トップレベル：ゲームモード選択 =================
 export default function HayaoshiWordGame() {
   const [gameType, setGameType] = useState(null); // null | "local" | "online"
@@ -278,6 +311,7 @@ function ModeSelectScreen({ onSelectSolo, onSelectLocalMulti, onSelectOnline }) 
             <span style={styles.logoIcon}>⚡</span>
             <h1 style={styles.title}>早押しワードゲーム</h1>
           </div>
+          <BgmToggle />
         </header>
         <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
           <div style={styles.sectionLabel}>あそびかたを選んでね</div>
@@ -392,6 +426,17 @@ function LocalGame({ initialMode, onExit }) {
     }
   }, [answeredIds, checkingIds, timeLeft, phase, running, players.length]);
 
+  // 保険：時間切れになってから5秒経っても（判定待ちが解消せず等の理由で）
+  // ラウンドが終わらない場合は、状況に関わらず強制的に結果画面へ進める。
+  useEffect(() => {
+    if (phase !== "playing" || !running || timeLeft > 0) return;
+    const watchdog = setTimeout(() => {
+      console.warn("watchdog: ラウンドが自動終了しなかったため強制終了します");
+      finishRound();
+    }, 5000);
+    return () => clearTimeout(watchdog);
+  }, [phase, running, timeLeft]);
+
   function finishRound() {
     setRunning(false);
     setPhase("roundResult");
@@ -456,8 +501,9 @@ function LocalGame({ initialMode, onExit }) {
     }
 
     // ここから先は「実在する言葉か」を外部辞書APIにリアルタイムで問い合わせる
+    // API呼び出しがハングしても画面が固まらないよう、3秒でタイムアウトさせる
     setCheckingIds((prev) => new Set(prev).add(playerId));
-    const result = await checkWordExistsOnline(norm);
+    const result = await withTimeout(checkWordExistsOnline(norm), WORD_CHECK_TIMEOUT_MS);
     if (roundIdRef.current !== roundId) return; // ラウンドが変わっていたら破棄
 
     const existsLocally = WORD_SET.has(norm);
@@ -602,6 +648,7 @@ function LocalGame({ initialMode, onExit }) {
               ラウンド {currentRound} / {totalRounds}
             </div>
           )}
+          <BgmToggle />
           {phase === "setup" && onExit && (
             <button className="pop-btn" onClick={onExit} style={styles.backBtn}>
               ← モード選択に戻る
@@ -1228,6 +1275,21 @@ function OnlineGame({ onExit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, room?.status, answeredCount, timeLeft, playersArr.length]);
 
+  // ホストのみ：上の判定が何らかの理由で発火しなかった場合の「保険」。
+  // ラウンド開始からサーバー時刻で ROUND_SECONDS+5秒 経ったら、状況に関わらず
+  // 強制的に結果画面へ遷移させる（フリーズ対策の最終防波堤）。
+  useEffect(() => {
+    if (!isHost || !room || room.status !== "playing" || !room.roundStartAt) return;
+    const deadlineMs = room.roundStartAt + (ROUND_SECONDS + 5) * 1000;
+    const msUntilDeadline = Math.max(0, deadlineMs - serverNow());
+    const watchdog = setTimeout(() => {
+      console.warn("watchdog: ラウンドが自動終了しなかったため強制終了します");
+      hostFinishRound();
+    }, msUntilDeadline);
+    return () => clearTimeout(watchdog);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, room?.status, room?.roundStartAt, room?.roundId]);
+
   const hostNextOrEnd = async () => {
     if (!dbApi || !isHost || !room) return;
     setErrorMsg("");
@@ -1278,7 +1340,8 @@ function OnlineGame({ onExit }) {
       }
 
       setChecking(true);
-      const result = await checkWordExistsOnline(norm);
+      // API呼び出しがハングしても回答が送信できなくならないよう、3秒でタイムアウトさせる
+      const result = await withTimeout(checkWordExistsOnline(norm), WORD_CHECK_TIMEOUT_MS);
       setChecking(false);
       const correct = result.exists === true || WORD_SET.has(norm);
       await set(ref(db, path), {
@@ -1338,6 +1401,7 @@ function OnlineGame({ onExit }) {
           {room?.status && room.status !== "lobby" && (
             <div style={styles.roundBadge}>ラウンド {room.currentRound} / {room.totalRounds}</div>
           )}
+          <BgmToggle />
           <button className="pop-btn" onClick={sub === "room" ? leaveRoom : onExit} style={styles.backBtn}>
             ← {sub === "room" ? "退出する" : "モード選択に戻る"}
           </button>
@@ -1675,6 +1739,15 @@ const styles = {
     borderRadius: 999,
     border: "2px solid rgba(255,248,236,0.4)",
     background: "transparent",
+    color: "#FFF8EC",
+    fontWeight: 800,
+    fontSize: 12,
+  },
+  bgmBtn: {
+    padding: "6px 12px",
+    borderRadius: 999,
+    border: "2px solid rgba(255,248,236,0.4)",
+    background: "rgba(255,255,255,0.08)",
     color: "#FFF8EC",
     fontWeight: 800,
     fontSize: 12,
