@@ -129,6 +129,16 @@ const WORD_LIST = [
   "おんがくかい","けしょうひん",
   "おかいものかご","やきゅうじょう","おたんじょうび","しょうぼうしゃ",
   "ゆうびんきょく","けんきゅうしゃ",
+  // ---- 6〜9文字のハードモード用単語 ----
+  "だいがくせい","こうこうせい","こうつうじこ","げいじゅつか","はくぶつかん",
+  "けいさつしょ","おんがくしつ",
+  "ちゅうがっこう","しょうがっこう","しょうがくせい","としょかんいん",
+  "とうきょうえき","だいとうりょう","こうつうきかん","けんきゅうしつ",
+  "こうつうあんぜん","うんてんめんきょ","おかいものぶくろ","けんこうしんだん",
+  "すいえいせんしゅ","やきゅうせんしゅ","しょうぼうちょう","こうこうやきゅう",
+  "たんじょうびかい","だいがくせいかつ","こうこうせいかつ","だいがくいんせい",
+  "どうぶつびょういん","しんかんせんのりば","だいとうりょうせん",
+  "ゆうびんきょくいん","どうぶつえんちょう","こうこうやきゅうぶ",
 ];
 
 // カタカナ→ひらがな正規化
@@ -181,7 +191,7 @@ const WORD_CHECK_TIMEOUT_MS = 3000;
 // 出題に使ってはいけない頭文字
 const NG_CHARS = new Set(["ん", "を", "ゐ", "ゑ", "ー", "ゃ", "ゅ", "ょ", "っ"]);
 const MIN_LEN = 2;
-const MAX_LEN = 7;
+const MAX_LEN = 9;
 // 「実在する言葉が1つでもあれば出題OK」（＝存在しない問題は絶対に出さないための最低ライン）
 const MIN_WORD_COUNT = 1;
 
@@ -219,18 +229,28 @@ const VALID_COMBOS = Array.from(WORD_INDEX.entries())
   .map(([key]) => key);
 
 // 文字数が長い（＝該当語が少なく難しい）お題ほど選ばれやすくするための重み。
-// 2〜5文字は「文字数の2乗」で長い方を優遇し、6〜7文字はあえて低い固定値にして
-// 「たまに混ざる難問」くらいの低確率に抑える。
+// difficulty === "hard" のときは6〜9文字がほとんどを占めるようにし、
+// それ以外（通常モード）は今まで通り2〜7文字中心（8・9文字は出さない）。
 // 存在保証は VALID_COMBOS（実在語1つ以上）で担保済みなので、ここでは「出やすさ」だけを調整する。
-function weightForCombo(key) {
+function weightForCombo(key, difficulty) {
   const len = Number(key.split("-")[1]);
+  if (difficulty === "hard") {
+    if (len >= 6) return len * len; // 6〜9文字をしっかり優遇（6:36/7:49/8:64/9:81）
+    return 2; // 2〜5文字はごくまれに混ざる程度
+  }
+  // 通常モード
+  if (len >= 8) return 0; // 8・9文字は通常モードには出さない
   if (len >= 6) return 3; // 6・7文字は低確率で混ぜる
   return len * len; // 2文字:4 / 3文字:9 / 4文字:16 / 5文字:25
 }
 
-function weightedPick(pool) {
-  const weights = pool.map(weightForCombo);
+function weightedPick(pool, difficulty) {
+  const weights = pool.map((k) => weightForCombo(k, difficulty));
   const total = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0) {
+    // 万一重みが全部0になった場合の保険（均等抽選）
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
   let r = Math.random() * total;
   for (let i = 0; i < pool.length; i++) {
     r -= weights[i];
@@ -239,12 +259,12 @@ function weightedPick(pool) {
   return pool[pool.length - 1];
 }
 
-function pickTopic(used) {
+function pickTopic(used, difficulty) {
   const usedSet = new Set((used || []).slice(-8));
   let pool = VALID_COMBOS.filter((c) => !usedSet.has(c));
   if (pool.length === 0) pool = VALID_COMBOS;
   if (pool.length === 0) return { char: "か", len: 3, key: "か-3" }; // 最終フォールバック
-  const pick = weightedPick(pool);
+  const pick = weightedPick(pool, difficulty);
   const [char, lenStr] = pick.split("-");
   return { char, len: Number(lenStr), key: pick };
 }
@@ -271,35 +291,40 @@ function BgmToggle() {
 // ================= トップレベル：ゲームモード選択 =================
 export default function HayaoshiWordGame() {
   const [gameType, setGameType] = useState(null); // null | "local" | "online"
-  const [localInitialMode, setLocalInitialMode] = useState("multi");
+  const [pendingType, setPendingType] = useState(null); // 難易度選択待ち: "local" | "online" | null
+  const [difficulty, setDifficulty] = useState("normal"); // "normal" | "hard"
 
   if (gameType === "online") {
-    return <OnlineGame onExit={() => setGameType(null)} />;
+    return <OnlineGame difficulty={difficulty} onExit={() => setGameType(null)} />;
   }
   if (gameType === "local") {
     return (
       <LocalGame
-        initialMode={localInitialMode}
+        difficulty={difficulty}
         onExit={() => setGameType(null)}
+      />
+    );
+  }
+  if (pendingType) {
+    return (
+      <DifficultySelectScreen
+        onBack={() => setPendingType(null)}
+        onSelect={(diff) => {
+          setDifficulty(diff);
+          setGameType(pendingType);
+        }}
       />
     );
   }
   return (
     <ModeSelectScreen
-      onSelectSolo={() => {
-        setLocalInitialMode("solo");
-        setGameType("local");
-      }}
-      onSelectLocalMulti={() => {
-        setLocalInitialMode("multi");
-        setGameType("local");
-      }}
-      onSelectOnline={() => setGameType("online")}
+      onSelectSolo={() => setPendingType("local")}
+      onSelectOnline={() => setPendingType("online")}
     />
   );
 }
 
-function ModeSelectScreen({ onSelectSolo, onSelectLocalMulti, onSelectOnline }) {
+function ModeSelectScreen({ onSelectSolo, onSelectOnline }) {
   return (
     <div style={styles.app}>
       <style>{`@import url('${buildFontLink()}'); * { box-sizing: border-box; } .pop-btn { transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; cursor: pointer; } .pop-btn:hover { transform: translateY(-2px); filter: brightness(1.05); } .pop-btn:active { transform: translateY(1px) scale(0.98); }`}</style>
@@ -320,10 +345,6 @@ function ModeSelectScreen({ onSelectSolo, onSelectLocalMulti, onSelectOnline }) 
               🧍 ひとりで練習
               <span style={styles.modeCardSub}>1台の端末でひとりで遊ぶ</span>
             </button>
-            <button className="pop-btn" onClick={onSelectLocalMulti} style={styles.modeCard}>
-              👥 同じ端末でみんなで対戦
-              <span style={styles.modeCardSub}>1台を回し合って対戦</span>
-            </button>
             <button className="pop-btn" onClick={onSelectOnline} style={{ ...styles.modeCard, background: "linear-gradient(135deg, #FF5D8F, #FFD23F)" }}>
               🌐 友達とオンライン対戦
               <span style={styles.modeCardSub}>それぞれの端末から部屋に参加</span>
@@ -335,11 +356,50 @@ function ModeSelectScreen({ onSelectSolo, onSelectLocalMulti, onSelectOnline }) 
   );
 }
 
-function LocalGame({ initialMode, onExit }) {
+function DifficultySelectScreen({ onBack, onSelect }) {
+  return (
+    <div style={styles.app}>
+      <style>{`@import url('${buildFontLink()}'); * { box-sizing: border-box; } .pop-btn { transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; cursor: pointer; } .pop-btn:hover { transform: translateY(-2px); filter: brightness(1.05); } .pop-btn:active { transform: translateY(1px) scale(0.98); }`}</style>
+      <div style={{ ...styles.blob, top: -60, left: -40, background: "#FF5D8F" }} />
+      <div style={{ ...styles.blob, bottom: -70, right: -50, background: "#2EC4B6" }} />
+      <div style={styles.container}>
+        <header style={styles.header}>
+          <div style={styles.logoRow}>
+            <span style={styles.logoIcon}>⚡</span>
+            <h1 style={styles.title}>早押しワードゲーム</h1>
+          </div>
+          <BgmToggle />
+          <button className="pop-btn" onClick={onBack} style={styles.backBtn}>
+            ← 戻る
+          </button>
+        </header>
+        <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
+          <div style={styles.sectionLabel}>難易度を選んでね</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
+            <button className="pop-btn" onClick={() => onSelect("normal")} style={styles.modeCard}>
+              🙂 通常モード
+              <span style={styles.modeCardSub}>2〜7文字中心（今までの難易度）</span>
+            </button>
+            <button
+              className="pop-btn"
+              onClick={() => onSelect("hard")}
+              style={{ ...styles.modeCard, background: "linear-gradient(135deg, #241443, #c9457a)" }}
+            >
+              🔥 ハードモード
+              <span style={styles.modeCardSub}>6〜9文字の難問がほとんど</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LocalGame({ difficulty, onExit }) {
 
   // ------- ゲーム全体の状態 -------
   const [phase, setPhase] = useState("setup"); // setup | playing | roundResult | gameOver
-  const [mode, setMode] = useState(initialMode || "multi"); // multi | solo
+  const [mode] = useState("solo"); // 常にひとりモード（同じ端末で対戦モードは廃止）
   const [playerNames, setPlayerNames] = useState(["", ""]);
   const [players, setPlayers] = useState([]); // {id, name, score}
   const [totalRounds, setTotalRounds] = useState(7);
@@ -368,7 +428,7 @@ function LocalGame({ initialMode, onExit }) {
 
   const startRound = useCallback(
     (roundNum, used) => {
-      const t = pickTopic(used);
+      const t = pickTopic(used, difficulty);
       roundIdRef.current += 1;
       setTopic(t);
       setUsedCombos((prev) => [...prev, t.key || `${t.char}-${t.len}`]);
@@ -387,7 +447,7 @@ function LocalGame({ initialMode, onExit }) {
         setRunning(true);
       }, 900);
     },
-    [pickTopic]
+    [difficulty]
   );
 
   // ---------- ゲーム開始 ----------
@@ -580,10 +640,7 @@ function LocalGame({ initialMode, onExit }) {
   const removePlayer = (i) =>
     setPlayerNames((prev) => (prev.length > 2 ? prev.filter((_, j) => j !== i) : prev));
 
-  const canStart =
-    mode === "solo"
-      ? true
-      : playerNames.filter((n) => n.trim()).length >= 2;
+  const canStart = true; // ひとりモードのみなので常に開始可能
 
   const timerPct = timeLeft / ROUND_SECONDS;
   const timerColor =
@@ -658,12 +715,8 @@ function LocalGame({ initialMode, onExit }) {
 
         {phase === "setup" && (
           <SetupScreen
-            mode={mode}
-            setMode={setMode}
             playerNames={playerNames}
             updateName={updateName}
-            addPlayer={addPlayer}
-            removePlayer={removePlayer}
             totalRounds={totalRounds}
             setTotalRounds={setTotalRounds}
             canStart={canStart}
@@ -712,79 +765,21 @@ function LocalGame({ initialMode, onExit }) {
 // ================= サブコンポーネント =================
 
 function SetupScreen({
-  mode, setMode, playerNames, updateName, addPlayer, removePlayer,
+  playerNames, updateName,
   totalRounds, setTotalRounds, canStart, handleStart,
 }) {
   return (
     <div style={{ ...styles.card, animation: "popIn .35s ease" }}>
-      <div style={styles.modeToggle}>
-        <button
-          className="pop-btn"
-          onClick={() => setMode("multi")}
-          style={{
-            ...styles.toggleBtn,
-            ...(mode === "multi" ? styles.toggleBtnActive : {}),
-          }}
-        >
-          👥 みんなで対戦
-        </button>
-        <button
-          className="pop-btn"
-          onClick={() => setMode("solo")}
-          style={{
-            ...styles.toggleBtn,
-            ...(mode === "solo" ? styles.toggleBtnActive : {}),
-          }}
-        >
-          🧍 ひとりで練習
-        </button>
+      <div style={{ marginTop: 4 }}>
+        <div style={styles.sectionLabel}>あなたの名前（省略可）</div>
+        <input
+          value={playerNames[0]}
+          onChange={(e) => updateName(0, e.target.value)}
+          placeholder="プレイヤー"
+          style={styles.input}
+          maxLength={10}
+        />
       </div>
-
-      {mode === "multi" ? (
-        <div style={{ marginTop: 18 }}>
-          <div style={styles.sectionLabel}>プレイヤー（2〜10人）</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {playerNames.map((name, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <div style={styles.playerNum}>{i + 1}</div>
-                <input
-                  value={name}
-                  onChange={(e) => updateName(i, e.target.value)}
-                  placeholder={`プレイヤー${i + 1}の名前`}
-                  style={styles.input}
-                  maxLength={10}
-                />
-                {playerNames.length > 2 && (
-                  <button
-                    className="pop-btn"
-                    onClick={() => removePlayer(i)}
-                    style={styles.removeBtn}
-                    aria-label="このプレイヤーを削除"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          {playerNames.length < 10 && (
-            <button className="pop-btn" onClick={addPlayer} style={styles.addBtn}>
-              ＋ プレイヤーを追加
-            </button>
-          )}
-        </div>
-      ) : (
-        <div style={{ marginTop: 18 }}>
-          <div style={styles.sectionLabel}>あなたの名前（省略可）</div>
-          <input
-            value={playerNames[0]}
-            onChange={(e) => updateName(0, e.target.value)}
-            placeholder="プレイヤー"
-            style={styles.input}
-            maxLength={10}
-          />
-        </div>
-      )}
 
       <div style={{ marginTop: 22 }}>
         <div style={styles.sectionLabel}>ラウンド数</div>
@@ -818,7 +813,7 @@ function SetupScreen({
       </button>
 
       <p style={styles.helpText}>
-        あそびかた：お題（頭文字・文字数）が発表されたら、条件に合う言葉を考えて自分の名前ボタンを押して回答しよう。
+        あそびかた：お題（頭文字・文字数）が発表されたら、条件に合う言葉を考えて名前ボタンを押して回答しよう。
         早く正解するほど高得点！制限時間は30秒。
       </p>
     </div>
@@ -1034,7 +1029,7 @@ function makePlayerId() {
   return "p_" + Math.random().toString(36).slice(2, 10);
 }
 
-function OnlineGame({ onExit }) {
+function OnlineGame({ difficulty, onExit }) {
   const [dbApi, setDbApi] = useState(null); // firebase/database の関数一式（動的import）
   const [loadError, setLoadError] = useState(null);
   const [sub, setSub] = useState("home"); // home | join | room
@@ -1101,6 +1096,7 @@ function OnlineGame({ onExit }) {
         status: "lobby",
         hostId: pid,
         totalRounds: 7,
+        difficulty: difficulty || "normal",
         currentRound: 0,
         topic: null,
         roundId: 0,
@@ -1211,7 +1207,7 @@ function OnlineGame({ onExit }) {
     if (!dbApi || !isHost) return;
     try {
       const { db, ref, update, serverTimestamp } = dbApi;
-      const t = pickTopic(used);
+      const t = pickTopic(used, room.difficulty || difficulty);
       const nextRoundId = (room.roundId || 0) + 1;
       await update(ref(db, `rooms/${roomCode}`), {
         status: "playing",
@@ -1494,6 +1490,28 @@ function OnlineGame({ onExit }) {
             </div>
             {isHost ? (
               <>
+                <div style={{ ...styles.sectionLabel, marginTop: 18 }}>難易度</div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {[
+                    { key: "normal", label: "通常" },
+                    { key: "hard", label: "🔥 ハード（6〜9文字中心）" },
+                  ].map((d) => (
+                    <button
+                      key={d.key}
+                      className="pop-btn"
+                      onClick={() =>
+                        dbApi &&
+                        dbApi.update(dbApi.ref(dbApi.db, `rooms/${roomCode}`), { difficulty: d.key })
+                      }
+                      style={{
+                        ...styles.roundOption,
+                        ...((room.difficulty || "normal") === d.key ? styles.roundOptionActive : {}),
+                      }}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
                 <div style={{ ...styles.sectionLabel, marginTop: 18 }}>ラウンド数</div>
                 <div style={{ display: "flex", gap: 10 }}>
                   {[5, 7, 10].map((n) => (
@@ -1518,7 +1536,12 @@ function OnlineGame({ onExit }) {
                 </button>
               </>
             ) : (
-              <p style={styles.helpText}>ホストがゲームを開始するのを待っています…</p>
+              <>
+                <p style={styles.helpText}>
+                  難易度：{(room.difficulty || "normal") === "hard" ? "🔥 ハード（6〜9文字中心）" : "通常"}
+                </p>
+                <p style={styles.helpText}>ホストがゲームを開始するのを待っています…</p>
+              </>
             )}
           </div>
         )}
