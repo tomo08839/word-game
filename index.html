@@ -8,11 +8,30 @@
       name="description"
       content="早押しワードゲームは、指定された頭文字と文字数に合う日本語の言葉を制限時間30秒以内にできるだけ早く入力して得点を競う無料の早押しクイズゲームです。ひとりで練習できるモードと、友達とオンラインで対戦できるモードがあり、通常モードのほかに6〜9文字の難しい言葉が中心のハードモードも選べます。"
     />
-    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3467684450280525"
-     crossorigin="anonymous"></script>
+    <!-- Google AdSense サイト確認用コード -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3467684450280525" crossorigin="anonymous"></script>
   </head>
   <body style="margin:0;">
     <div id="root"></div>
+
+    <!-- ここから下は #root の外なので、Reactの描画に関係なく常に表示される静的フッター -->
+    <footer style="
+      font-family: 'Hiragino Sans','Yu Gothic',sans-serif;
+      background:#1a0f33;
+      color:#cfc7e6;
+      text-align:center;
+      padding: 18px 12px 28px;
+      font-size: 12px;
+    ">
+      <nav style="display:flex; gap:16px; justify-content:center; flex-wrap:wrap; margin-bottom:10px;">
+        <a href="/how-to-play.html" style="color:#FFD23F; text-decoration:none;">遊び方ガイド</a>
+        <a href="/devlog.html" style="color:#FFD23F; text-decoration:none;">開発の裏話</a>
+        <a href="/faq.html" style="color:#FFD23F; text-decoration:none;">よくある質問</a>
+        <a href="/privacy.html" style="color:#FFD23F; text-decoration:none;">プライバシーポリシー</a>
+      </nav>
+      <div>© 早押しワードゲーム</div>
+    </footer>
+
     <noscript>
       <div style="font-family: sans-serif; padding: 24px; line-height: 1.8;">
         <h1>早押しワードゲーム</h1>
